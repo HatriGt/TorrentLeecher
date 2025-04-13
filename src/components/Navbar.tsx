@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Plus, Download, Menu, X, HardDrive } from "lucide-react";
@@ -59,7 +58,7 @@ const Navbar = () => {
           <Logo />
           <div className="hidden md:block ml-6">
             {loading ? (
-              <div className="w-60 h-12 bg-muted animate-pulse rounded-md"></div>
+              <div className="w-60 h-16 bg-muted animate-pulse rounded" />
             ) : storageInfo ? (
               <StorageStatus 
                 used={storageInfo.used} 

@@ -1,4 +1,3 @@
-
 import { Progress } from "@/components/ui/progress";
 import { ArrowRight } from "lucide-react";
 
@@ -8,10 +7,10 @@ interface StorageStatusProps {
   isPremium?: boolean;
 }
 
-const StorageStatus = ({ used, total, isPremium = false }: StorageStatusProps) => {
-  const usedFormatted = used.toFixed(2);
-  const totalFormatted = total.toFixed(2);
-  const percentUsed = (used / total) * 100;
+const StorageStatus = ({ used = 0, total = 0, isPremium = false }: StorageStatusProps) => {
+  const usedFormatted = (used || 0).toFixed(2);
+  const totalFormatted = (total || 0).toFixed(2);
+  const percentUsed = total > 0 ? (used / total) * 100 : 0;
   
   // Determine progress bar color based on usage percentage
   let progressColor = "bg-green-500";

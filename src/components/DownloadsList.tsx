@@ -1,6 +1,5 @@
-
 import { useState, useEffect } from "react";
-import DownloadProgress from "./DownloadProgress";
+import DownloadProgress from "@/components/DownloadProgress";
 import { getActiveDownloads } from "@/services/downloadService";
 import { useToast } from "@/hooks/use-toast";
 import { DownloadItem } from "@/types/torrent";
@@ -16,7 +15,11 @@ const DownloadsList = () => {
       try {
         setLoading(true);
         const data = await getActiveDownloads();
-        setActiveDownloads(data);
+        // Filter out duplicates based on downloadId
+        const uniqueDownloads = data.filter((download, index, self) =>
+          index === self.findIndex((d) => d.id === download.id)
+        );
+        setActiveDownloads(uniqueDownloads);
       } catch (error) {
         console.error("Failed to fetch downloads:", error);
         toast({
@@ -42,7 +45,6 @@ const DownloadsList = () => {
           filter: 'status=in.(queued,downloading,processing)'
         }, 
         async () => {
-          // Refetch downloads when changes occur
           await fetchDownloads();
         }
       )
@@ -53,35 +55,50 @@ const DownloadsList = () => {
     };
   }, [toast]);
 
-  return (
-    <div className="w-full max-w-3xl mx-auto space-y-4">
-      <h2 className="text-xl font-display font-semibold mb-4 text-foreground">Your Downloads</h2>
-      
-      {loading ? (
+  const handleRemoveDownload = (downloadId: string) => {
+    setActiveDownloads(prev => prev.filter(d => d.id !== downloadId));
+  };
+
+  if (loading) {
+    return (
+      <div className="w-full max-w-3xl mx-auto space-y-4">
+        <h2 className="text-xl font-display font-semibold mb-4 text-foreground">Your Downloads</h2>
         <div className="space-y-4">
           {[1, 2].map((i) => (
             <div key={i} className="h-24 bg-muted animate-pulse rounded-lg"></div>
           ))}
         </div>
-      ) : activeDownloads.length === 0 ? (
+      </div>
+    );
+  }
+
+  if (activeDownloads.length === 0) {
+    return (
+      <div className="w-full max-w-3xl mx-auto">
+        <h2 className="text-xl font-display font-semibold mb-4 text-foreground">Your Downloads</h2>
         <div className="text-center text-muted-foreground py-10 bg-muted/50 rounded-lg border border-border">
           <p>No downloads in progress</p>
         </div>
-      ) : (
-        <div className="space-y-4">
-          {activeDownloads.map((download, index) => (
-            <div key={download.id} className={`delay-${index + 1}`}>
-              <DownloadProgress
-                downloadId={download.id}
-                fileName={download.fileName}
-                fileSize={download.fileSize}
-                initialProgress={download.progress}
-                status={download.status}
-              />
-            </div>
-          ))}
-        </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-3xl mx-auto">
+      <h2 className="text-xl font-display font-semibold mb-4 text-foreground">Your Downloads</h2>
+      <div className="space-y-4">
+        {activeDownloads.map((download) => (
+          <DownloadProgress
+            key={download.id}
+            downloadId={download.id}
+            fileName={download.fileName}
+            fileSize={download.fileSize}
+            initialProgress={download.progress}
+            status={download.status}
+            onRemove={() => handleRemoveDownload(download.id)}
+          />
+        ))}
+      </div>
     </div>
   );
 };

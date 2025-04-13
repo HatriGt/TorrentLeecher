@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 .cur*
 bun*
+.env
+backend/downloads/*
+package-lock.json

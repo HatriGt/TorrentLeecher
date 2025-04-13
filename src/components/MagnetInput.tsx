@@ -1,14 +1,20 @@
-
 import { useState } from "react";
 import { Magnet, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { startDownload, simulateDownloadProgress } from "@/services/downloadService";
+import { startDownload } from "@/services/downloadService";
 import { useToast } from "@/hooks/use-toast";
+import DownloadProgress from "@/components/DownloadProgress";
+
+interface ActiveDownload {
+  id: string;
+  fileName: string;
+}
 
 const MagnetInput = () => {
   const [magnetLink, setMagnetLink] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [activeDownload, setActiveDownload] = useState<ActiveDownload | null>(null);
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -31,11 +37,16 @@ const MagnetInput = () => {
           title: "Success",
           description: result.message || "Download started successfully",
         });
+
+        // Extract file name from magnet link
+        const nameMatch = magnetLink.match(/dn=([^&]+)/);
+        const fileName = nameMatch ? decodeURIComponent(nameMatch[1]) : "Unknown";
+
+        setActiveDownload({
+          id: result.id,
+          fileName
+        });
         setMagnetLink("");
-        
-        // Simulate download progress for demo purposes
-        // In a real app, this would be handled by WebSockets
-        simulateDownloadProgress(result.id);
       } else {
         toast({
           title: "Error",
@@ -56,41 +67,31 @@ const MagnetInput = () => {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-3xl mx-auto">
-      <div className="relative p-1 bg-gradient-to-r from-primary to-secondary rounded-xl">
-        <div className="relative bg-white dark:bg-gray-950 rounded-lg">
-          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-            <Magnet className="h-5 w-5 text-primary" />
-          </div>
-          <Input
-            type="text"
-            value={magnetLink}
-            onChange={(e) => setMagnetLink(e.target.value)}
-            placeholder="Paste magnet link here..."
-            className="pl-12 pr-32 py-6 text-foreground bg-white border-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary/50 rounded-lg"
-          />
-          <div className="absolute inset-y-0 right-2 flex items-center">
-            <Button 
-              type="submit" 
-              disabled={isLoading || !magnetLink.trim()} 
-              className="mr-1 h-[85%] bg-gradient-to-r from-primary to-secondary hover:opacity-90 text-white font-medium"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Starting...
-                </>
-              ) : (
-                "Start Download"
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
-      <div className="text-center mt-4 text-sm text-muted-foreground">
-        By using our service, you agree to our <a href="#" className="text-primary hover:underline">Terms of Service</a> and <a href="#" className="text-primary hover:underline">Privacy Policy</a>
-      </div>
-    </form>
+    <div className="space-y-6">
+      <form onSubmit={handleSubmit} className="flex gap-2 w-full max-w-2xl">
+        <Input
+          type="text"
+          placeholder="Enter magnet link..."
+          value={magnetLink}
+          onChange={(e) => setMagnetLink(e.target.value)}
+          className="flex-1"
+        />
+        <Button type="submit" disabled={isLoading}>
+          {isLoading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Magnet className="h-4 w-4" />
+          )}
+        </Button>
+      </form>
+
+      {activeDownload && (
+        <DownloadProgress
+          downloadId={activeDownload.id}
+          fileName={activeDownload.fileName}
+        />
+      )}
+    </div>
   );
 };
 

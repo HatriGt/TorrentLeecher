@@ -1,191 +1,273 @@
-
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Progress } from "@/components/ui/progress";
-import { Download, ExternalLink, Trash2, Timer } from "lucide-react";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { formatFileSize } from "@/lib/utils";
-import { supabase } from "@/integrations/supabase/client";
+import { initializeSocket } from "@/services/downloadService";
+import { formatBytes } from "@/lib/utils";
+import { ChevronDown, ChevronUp, Folder, File, Download, X, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { cancelDownload } from "@/services/downloadService";
 
-interface DownloadProgressProps {
-  downloadId: string;
-  fileName: string;
-  fileSize: string | number;
-  initialProgress?: number;
-  status: 'queued' | 'downloading' | 'processing' | 'completed' | 'error' | 'cancelled';
+interface FileInfo {
+  name: string;
+  length: number;
+  path: string;
 }
 
-const DownloadProgress = ({
-  downloadId,
-  fileName,
-  fileSize,
-  initialProgress = 0,
-  status: initialStatus,
+interface DownloadStats {
+  progress: string | number;
+  downloadSpeed: number;
+  uploaded: number;
+  total: number;
+  peers: number;
+  files?: FileInfo[];
+}
+
+interface DownloadProgressProps {
+  fileName: string;
+  downloadId: string;
+  fileSize?: number;
+  initialProgress?: number;
+  status?: "queued" | "downloading" | "processing" | "completed" | "error" | "cancelled";
+  onRemove?: () => void;
+}
+
+const DownloadProgress = ({ 
+  fileName, 
+  downloadId, 
+  initialProgress = 0, 
+  status: initialStatus = "downloading",
+  onRemove 
 }: DownloadProgressProps) => {
-  const [progress, setProgress] = useState(initialProgress);
-  const [status, setStatus] = useState<'queued' | 'downloading' | 'processing' | 'completed' | 'error' | 'cancelled'>(initialStatus);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [stats, setStats] = useState<DownloadStats>({
+    progress: initialProgress,
+    downloadSpeed: 0,
+    uploaded: 0,
+    total: 0,
+    peers: 0
+  });
+  const [status, setStatus] = useState(initialStatus);
+  const [showFiles, setShowFiles] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const { toast } = useToast();
 
-  // Format file size if it's a number
-  const formattedSize = typeof fileSize === "number" ? formatFileSize(fileSize) : fileSize;
-
   useEffect(() => {
-    // Subscribe to changes for this specific download
-    const channel = supabase
-      .channel(`download-${downloadId}`)
-      .on('postgres_changes', 
-        { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'downloads',
-          filter: `id=eq.${downloadId}`
-        }, 
-        (payload) => {
-          // Update local state when the download changes
-          if (payload.new) {
-            setProgress(payload.new.progress || 0);
-            if (payload.new.status) {
-              setStatus(payload.new.status as any);
-            }
-          }
-        }
-      )
-      .subscribe();
-    
-    return () => {
-      supabase.removeChannel(channel);
+    const socket = initializeSocket();
+
+    const handleProgress = (data: DownloadStats) => {
+      console.log('Progress update received:', data);
+      setStats({
+        progress: typeof data.progress === 'string' ? parseFloat(data.progress) : data.progress,
+        downloadSpeed: data.downloadSpeed,
+        uploaded: data.uploaded,
+        total: data.total,
+        peers: data.peers,
+        files: data.files
+      });
     };
-  }, [downloadId]);
 
-  // Determine progress bar color based on status
-  let progressColor = "bg-primary";
-  if (status === "processing") progressColor = "bg-secondary";
-  if (status === "completed") progressColor = "bg-green-500";
-  if (status === "error") progressColor = "bg-red-500";
-  if (status === "queued") progressColor = "bg-amber-500";
-  if (status === "cancelled") progressColor = "bg-gray-500";
+    const handleComplete = () => {
+      setStatus('completed');
+      setStats(prev => ({ ...prev, progress: 100 }));
+    };
 
-  const handleOpenInDrive = () => {
-    // This would typically navigate to Google Drive
-    // For demo purposes, we'll just show a toast
-    toast({
-      title: "Opening in Google Drive",
-      description: `File: ${fileName}`,
-    });
-    // In a real app, this would use the actual Drive link:
-    // window.open(driveLink, "_blank", "noopener,noreferrer");
-  };
+    const handleError = (error: any) => {
+      console.error('Download error:', error);
+      setStatus('error');
+    };
 
-  const handleDeleteDownload = async () => {
-    try {
-      setIsDeleting(true);
-      const result = await cancelDownload(downloadId);
-      if (result.success) {
-        toast({
-          title: "Success",
-          description: "Download canceled successfully",
-        });
-      } else {
-        throw new Error(result.message || "Failed to cancel download");
+    const handleCancelled = () => {
+      setStatus('cancelled');
+      if (onRemove) {
+        onRemove();
       }
+    };
+
+    socket.on('download-progress', handleProgress);
+    socket.on('download-complete', handleComplete);
+    socket.on('download-error', handleError);
+    socket.on('download-cancelled', handleCancelled);
+
+    return () => {
+      socket.off('download-progress', handleProgress);
+      socket.off('download-complete', handleComplete);
+      socket.off('download-error', handleError);
+      socket.off('download-cancelled', handleCancelled);
+    };
+  }, [downloadId, onRemove]);
+
+  const handleCancel = async () => {
+    try {
+      setIsCancelling(true);
+      const response = await fetch(`/api/downloads/${downloadId}/cancel`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to cancel download');
+      }
+
+      toast({
+        title: "Download Cancelled",
+        description: "The download has been cancelled and files cleaned up.",
+      });
     } catch (error) {
-      console.error("Failed to cancel download:", error);
+      console.error('Failed to cancel download:', error);
       toast({
         title: "Error",
-        description: typeof error === 'object' && error !== null && 'message' in error 
-          ? (error as Error).message 
-          : "Failed to cancel download",
+        description: "Failed to cancel download. Please try again.",
         variant: "destructive",
       });
     } finally {
-      setIsDeleting(false);
+      setIsCancelling(false);
     }
   };
 
-  return (
-    <div className="w-full bg-card shadow-sm rounded-lg p-4 border border-border animate-slide-up hover:bg-card/80 transition-colors">
-      <div className="flex items-start justify-between mb-2">
-        <div className="flex-1 mr-4">
-          <h3 className="font-medium text-foreground truncate" title={fileName}>{fileName}</h3>
-          <p className="text-sm text-muted-foreground">{formattedSize}</p>
+  const progress = typeof stats.progress === 'string' ? parseFloat(stats.progress) : stats.progress;
+  const timeRemaining = stats.downloadSpeed > 0 
+    ? ((stats.total - (stats.total * (progress / 100))) / stats.downloadSpeed)
+    : 0;
+
+  const formatTime = (seconds: number) => {
+    if (seconds === 0) return 'calculating...';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours > 0) return `${hours}h ${minutes}m remaining`;
+    return `${minutes}m remaining`;
+  };
+
+  const getStatusColor = () => {
+    switch (status) {
+      case 'completed': return 'bg-green-500';
+      case 'error': return 'bg-red-500';
+      case 'processing': return 'bg-yellow-500';
+      case 'cancelled': return 'bg-gray-500';
+      default: return 'bg-blue-500';
+    }
+  };
+
+  const renderFileTree = (files: FileInfo[] = []) => {
+    const fileTree: { [key: string]: FileInfo[] } = {};
+    
+    files.forEach(file => {
+      const parts = file.path.split('/');
+      const folder = parts.length > 1 ? parts[0] : '';
+      if (!fileTree[folder]) fileTree[folder] = [];
+      fileTree[folder].push(file);
+    });
+
+    return Object.entries(fileTree).map(([folder, files]) => (
+      <div key={folder} className="mt-2">
+        {folder && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Folder className="h-4 w-4" />
+            <span>{folder}</span>
+          </div>
+        )}
+        <div className="ml-4 space-y-1">
+          {files.map(file => (
+            <div key={file.path} className="flex items-center gap-2 text-sm">
+              <File className="h-4 w-4" />
+              <span>{file.name}</span>
+              <span className="text-xs text-muted-foreground">({formatBytes(file.length)})</span>
+            </div>
+          ))}
         </div>
-        <div className="flex items-center gap-2">
-          {status === "completed" ? (
-            <>
-              <Button 
-                variant="outline" 
-                size="icon" 
-                className="h-8 w-8 border-primary/30 text-primary hover:text-primary hover:bg-primary/10"
-                onClick={handleOpenInDrive}
-              >
-                <ExternalLink size={14} />
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8 text-red-500 hover:text-red-400 hover:bg-red-500/10"
-                onClick={handleDeleteDownload}
-                disabled={isDeleting}
-              >
-                <Trash2 size={14} />
-              </Button>
-            </>
-          ) : (
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="h-8 w-8 text-red-500 hover:text-red-400 hover:bg-red-500/10"
-              onClick={handleDeleteDownload}
-              disabled={isDeleting}
+      </div>
+    ));
+  };
+
+  return (
+    <Card className="p-4 space-y-4 bg-gradient-to-r from-background to-muted">
+      <div className="flex justify-between items-start">
+        <div className="space-y-1 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="font-medium text-sm">{fileName}</h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2"
+              onClick={() => setShowFiles(!showFiles)}
             >
-              <Trash2 size={14} />
+              {showFiles ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </Button>
+          </div>
+          <div className="text-xs space-x-2 text-muted-foreground">
+            {status === 'downloading' && (
+              <>
+                <span className="font-medium">{formatBytes(stats.downloadSpeed)}/s</span>
+                <span>•</span>
+                <span>{stats.peers} peers</span>
+                <span>•</span>
+                <span>{formatTime(timeRemaining)}</span>
+              </>
+            )}
+            {status === 'completed' && (
+              <span className="text-green-500">Download Complete</span>
+            )}
+            {status === 'error' && (
+              <span className="text-red-500">Download Failed</span>
+            )}
+            {status === 'processing' && (
+              <span className="text-yellow-500">Processing...</span>
+            )}
+            {status === 'cancelled' && (
+              <span className="text-gray-500">Download Cancelled</span>
+            )}
+            {status === 'queued' && (
+              <span>Queued</span>
+            )}
+          </div>
+        </div>
+        <div className="text-sm font-medium flex items-center gap-2">
+          {progress.toFixed(1)}%
+          {status === 'completed' && (
+            <Button size="sm" variant="outline" className="h-7">
+              <Download className="h-4 w-4" />
+            </Button>
+          )}
+          {(status === 'downloading' || status === 'queued') && (
+            <Button 
+              size="sm" 
+              variant="outline" 
+              className="h-7 text-red-500 hover:text-red-600"
+              onClick={handleCancel}
+              disabled={isCancelling}
+            >
+              {isCancelling ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <X className="h-4 w-4" />
+              )}
             </Button>
           )}
         </div>
       </div>
       
-      <div className="space-y-2">
-        <Progress 
-          value={progress} 
-          className="h-2 bg-muted" 
-          indicatorClassName={progressColor}
-        />
-        <div className="flex justify-between items-center text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            {status === "downloading" && (
-              <>
-                <Download size={14} className="animate-pulse text-primary" />
-                <span>Downloading... {Math.round(progress)}%</span>
-              </>
+      <div className="relative pt-1">
+        <div className="overflow-hidden h-2 text-xs flex rounded-full bg-muted">
+          <div
+            style={{ width: `${progress}%` }}
+            className={cn(
+              "shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center transition-all",
+              getStatusColor()
             )}
-            {status === "processing" && (
-              <>
-                <Timer size={14} className="animate-pulse text-secondary" />
-                <span className="text-secondary">Processing file...</span>
-              </>
-            )}
-            {status === "queued" && (
-              <>
-                <Timer size={14} className="text-amber-500" />
-                <span className="text-amber-500">Queued...</span>
-              </>
-            )}
-            {status === "completed" && (
-              <span className="text-green-500">Ready to download</span>
-            )}
-            {status === "error" && (
-              <span className="text-red-500">Download failed</span>
-            )}
-            {status === "cancelled" && (
-              <span className="text-gray-500">Download cancelled</span>
-            )}
-          </div>
-          {(status === "downloading" || status === "processing") && <span>{Math.round(progress)}%</span>}
+          />
         </div>
       </div>
-    </div>
+      
+      <div className="flex justify-between items-center text-xs text-muted-foreground">
+        <span>{formatBytes(stats.uploaded)} uploaded</span>
+        <span>{formatBytes(stats.total * (progress / 100))} of {formatBytes(stats.total)}</span>
+      </div>
+
+      {showFiles && stats.files && stats.files.length > 0 && (
+        <div className="mt-4 border-t pt-4">
+          <div className="text-sm font-medium mb-2">Files</div>
+          {renderFileTree(stats.files)}
+        </div>
+      )}
+    </Card>
   );
 };
 

@@ -1,11 +1,73 @@
-
 import { supabase } from "@/integrations/supabase/client";
-import { DownloadItem, FileItem } from "@/types/torrent";
+import { DownloadItem, FileItem, FolderStructure } from "@/types/torrent";
+import { io, Socket } from "socket.io-client";
+
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL;
+
+// WebSocket connection
+let socket: Socket | null = null;
+
+// Initialize WebSocket connection
+export const initializeSocket = () => {
+  if (!socket) {
+    socket = io(API_BASE_URL, {
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5
+    });
+
+    socket.on('connect', () => {
+      console.log('Connected to WebSocket server');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Disconnected from WebSocket server');
+    });
+  }
+  return socket;
+};
+
+// Helper function to organize files into folder structure
+const organizeFiles = (files: FileItem[]): FolderStructure[] => {
+  const root: { [key: string]: FolderStructure } = {};
+
+  // First pass: create all folders
+  files.forEach(file => {
+    if (file.isFolder) {
+      root[file.id] = {
+        id: file.id,
+        name: file.name,
+        isFolder: true,
+        driveLink: file.driveLink,
+        children: []
+      };
+    }
+  });
+
+  // Second pass: organize files into their parent folders
+  files.forEach(file => {
+    if (!file.isFolder && file.parentFolder && root[file.parentFolder]) {
+      root[file.parentFolder].children = root[file.parentFolder].children || [];
+      root[file.parentFolder].children.push({
+        id: file.id,
+        name: file.name,
+        isFolder: false,
+        driveLink: file.driveLink
+      });
+    }
+  });
+
+  // Return only root level folders
+  return Object.values(root).filter(folder => !folder.parentFolder);
+};
 
 // Start a new download
 export const startDownload = async (magnetLink: string): Promise<{ success: boolean; message: string; id?: string }> => {
   try {
-    // Extract file name from magnet link (simplified version)
+    // Initialize socket if not already done
+    const socket = initializeSocket();
+    
+    // Extract file name from magnet link
     const nameMatch = magnetLink.match(/dn=([^&]+)/);
     const fileName = nameMatch ? decodeURIComponent(nameMatch[1]) : "Unknown";
     
@@ -22,7 +84,24 @@ export const startDownload = async (magnetLink: string): Promise<{ success: bool
       .single();
     
     if (error) throw error;
-    
+
+    // Start the actual download through the backend
+    const response = await fetch(`${API_BASE_URL}/api/download`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        magnetLink,
+        socketId: socket.id,
+        downloadId: data.id
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to start download on backend');
+    }
+
     return { 
       success: true, 
       message: "Download started successfully", 
@@ -53,7 +132,7 @@ export const getActiveDownloads = async (): Promise<DownloadItem[]> => {
       fileName: item.file_name,
       fileSize: item.file_size || 0,
       progress: item.progress || 0,
-      status: item.status as "queued" | "downloading" | "processing" | "completed" | "error" | "cancelled"
+      status: item.status
     }));
   } catch (error) {
     console.error("Error fetching active downloads:", error);
@@ -61,8 +140,8 @@ export const getActiveDownloads = async (): Promise<DownloadItem[]> => {
   }
 };
 
-// Get completed files
-export const getCompletedFiles = async (): Promise<FileItem[]> => {
+// Get completed files with folder structure
+export const getCompletedFiles = async (): Promise<FolderStructure[]> => {
   try {
     const { data, error } = await supabase
       .from("files")
@@ -71,61 +150,60 @@ export const getCompletedFiles = async (): Promise<FileItem[]> => {
     
     if (error) throw error;
     
-    // Map the database response to our FileItem type
-    // Note: The database doesn't have an is_folder field, so we'll handle this differently
-    return data.map(item => ({
+    const files = data.map(item => ({
       id: item.id,
       name: item.name,
       size: item.size,
       date: item.created_at,
-      // We'll assume some files are folders based on their drive_link (this is a workaround)
-      // In a real application, you would have a proper column for this
-      isFolder: item.name.endsWith('/') || item.drive_link.includes('folder'),
-      driveLink: item.drive_link
+      isFolder: item.is_folder,
+      driveLink: item.drive_link,
+      parentFolder: item.parent_folder,
+      path: item.path
     }));
+
+    return organizeFiles(files);
   } catch (error) {
     console.error("Error fetching files:", error);
     return [];
   }
 };
 
+// Cancel a download
+export async function cancelDownload(downloadId: string) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/downloads/${downloadId}/cancel`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to cancel download');
+    }
+
+    // Update local state through Supabase subscription
+    // The backend will handle updating Supabase and emitting WebSocket events
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error cancelling download:', error);
+    throw error;
+  }
+}
+
 // Delete a file
 export const deleteFile = async (fileId: string): Promise<{ success: boolean }> => {
   try {
-    const { error } = await supabase
-      .from("files")
-      .delete()
-      .eq('id', fileId);
-    
-    if (error) throw error;
-    
+    const response = await fetch(`${API_BASE_URL}/api/files/${fileId}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to delete file');
+    }
+
     return { success: true };
   } catch (error) {
     console.error("Error deleting file:", error);
     return { success: false };
-  }
-};
-
-// Cancel a download
-export const cancelDownload = async (downloadId: string): Promise<{ success: boolean; message?: string }> => {
-  try {
-    const { error } = await supabase
-      .from("downloads")
-      .update({ 
-        status: "cancelled",
-        completed_at: new Date().toISOString()
-      })
-      .eq('id', downloadId);
-    
-    if (error) throw error;
-    
-    return { success: true };
-  } catch (error) {
-    console.error("Error canceling download:", error);
-    return { 
-      success: false,
-      message: "Failed to cancel download" 
-    };
   }
 };
 
@@ -159,55 +237,4 @@ export const createFolder = async (folderName: string): Promise<{ success: boole
       message: "Failed to create folder" 
     };
   }
-};
-
-// Mock function to simulate upload progress for demo purposes
-// In a real app, this would be handled by a WebSocket connection
-export const simulateDownloadProgress = async (downloadId: string): Promise<void> => {
-  let progress = 0;
-  const interval = setInterval(async () => {
-    progress += Math.floor(Math.random() * 10) + 1;
-    
-    if (progress >= 100) {
-      progress = 100;
-      clearInterval(interval);
-      
-      // Update the download status to completed
-      await supabase
-        .from("downloads")
-        .update({ 
-          progress: 100, 
-          status: "completed",
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', downloadId);
-      
-      // Create a file entry for the completed download
-      const { data } = await supabase
-        .from("downloads")
-        .select("*")
-        .eq('id', downloadId)
-        .single();
-        
-      if (data) {
-        await supabase
-          .from("files")
-          .insert({
-            download_id: data.id,
-            name: data.file_name,
-            size: data.file_size || Math.floor(Math.random() * 1024 * 1024 * 1024),
-            drive_link: `https://drive.google.com/file/${data.id}`
-          });
-      }
-    } else {
-      // Update the download progress
-      await supabase
-        .from("downloads")
-        .update({ 
-          progress, 
-          status: progress > 90 ? "processing" : "downloading" 
-        })
-        .eq('id', downloadId);
-    }
-  }, 2000);
 };
