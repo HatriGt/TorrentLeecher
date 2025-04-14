@@ -471,6 +471,26 @@ io.on('connection', (socket) => {
 //                 console.error('Error deleting local file:', err)
 //               } else {
 //                 console.log('Local file cleaned up successfully')
+//                 
+//                 // After file is deleted, check if parent directory is empty and delete it
+//                 const parentDir = path.dirname(filePath)
+//                 fs.readdir(parentDir, (err, files) => {
+//                   if (err) {
+//                     console.error('Error reading parent directory:', err)
+//                     return
+//                   }
+//                   
+//                   // If directory is empty, delete it
+//                   if (files.length === 0) {
+//                     fs.rmdir(parentDir, (err) => {
+//                       if (err) {
+//                         console.error('Error deleting empty parent directory:', err)
+//                       } else {
+//                         console.log('Empty parent directory cleaned up successfully')
+//                       }
+//                     })
+//                   }
+//                 })
 //               }
 //             })
 //           } catch (uploadError) {
@@ -571,12 +591,26 @@ app.post('/api/download', async (req, res) => {
       dht: true,
       tracker: true,
       trackers: [
-        'udp://tracker.opentrackr.org:1337/announce',
-        'udp://tracker.openbittorrent.com:6969/announce',
-        'udp://open.stealth.si:80/announce',
-        'udp://exodus.desync.com:6969/announce'
-      ]
-    })
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://tracker.skyts.net:6969/announce",
+        "udp://tracker.ololosh.space:6969/announce",
+        "udp://retracker01-msk-virt.corbina.net:80/announce",
+        "udp://leet-tracker.moe:1337/announce",
+        "udp://isk.richardsw.club:6969/announce",
+        "udp://bt.ktrackers.com:6666/announce",
+        "udp://open.demonii.com:1337/announce",
+        "http://tracker.trackerfix.com:80/announce",
+        "udp://9.rarbg.me:2710/announce"
+      ],
+    });
 
     activeDownloads.set(magnetLink, {
       engine,
@@ -731,6 +765,26 @@ app.post('/api/download', async (req, res) => {
                 console.error('Error deleting local file:', err)
               } else {
                 console.log('Local file cleaned up successfully')
+                
+                // After file is deleted, check if parent directory is empty and delete it
+                const parentDir = path.dirname(filePath)
+                fs.readdir(parentDir, (err, files) => {
+                  if (err) {
+                    console.error('Error reading parent directory:', err)
+                    return
+                  }
+                  
+                  // If directory is empty, delete it
+                  if (files.length === 0) {
+                    fs.rmdir(parentDir, (err) => {
+                      if (err) {
+                        console.error('Error deleting empty parent directory:', err)
+                      } else {
+                        console.log('Empty parent directory cleaned up successfully')
+                      }
+                    })
+                  }
+                })
               }
             })
           } catch (uploadError) {
