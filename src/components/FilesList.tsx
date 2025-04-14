@@ -1,25 +1,29 @@
-
 import { useState, useEffect } from "react";
-import { Search } from "lucide-react";
+import { Search, ChevronUp, Plus } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import FileItem from "./FileItem";
 import NewFolderDialog from "./NewFolderDialog";
-import { getCompletedFiles, deleteFile } from "@/services/downloadService";
 import { useToast } from "@/hooks/use-toast";
-import { FileItem as FileItemType } from "@/types/torrent";
-import { supabase } from "@/integrations/supabase/client";
+import { DriveItem } from "@/types/torrent";
+import { getDriveFiles, organizeFilesIntoTree } from "@/services/driveService";
+import { Button } from "@/components/ui/button";
 
 const FilesList = () => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [files, setFiles] = useState<FileItemType[]>([]);
+  const [files, setFiles] = useState<DriveItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [currentPath, setCurrentPath] = useState<DriveItem[]>([]);
   const { toast } = useToast();
   
   const fetchFiles = async () => {
     try {
       setLoading(true);
-      const data = await getCompletedFiles();
-      setFiles(data);
+      const data = await getDriveFiles(
+        currentPath.length > 0 ? currentPath[currentPath.length - 1].id : undefined,
+        false
+      );
+      const organizedFiles = organizeFilesIntoTree(data);
+      setFiles(organizedFiles);
     } catch (error) {
       console.error("Failed to fetch files:", error);
       toast({
@@ -34,44 +38,14 @@ const FilesList = () => {
 
   useEffect(() => {
     fetchFiles();
+  }, [currentPath]);
 
-    // Subscribe to changes on the files table
-    const channel = supabase
-      .channel('files-changes')
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'files'
-        }, 
-        async () => {
-          // Refetch files when changes occur
-          await fetchFiles();
-        }
-      )
-      .subscribe();
-    
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [toast]);
+  const handleFolderClick = (folder: DriveItem) => {
+    setCurrentPath(prev => [...prev, folder]);
+  };
 
-  const handleDeleteFile = async (id: string) => {
-    try {
-      await deleteFile(id);
-      setFiles(prevFiles => prevFiles.filter(file => file.id !== id));
-      toast({
-        title: "Success",
-        description: "File deleted successfully",
-      });
-    } catch (error) {
-      console.error("Failed to delete file:", error);
-      toast({
-        title: "Error",
-        description: "Failed to delete file",
-        variant: "destructive",
-      });
-    }
+  const handleFolderUp = () => {
+    setCurrentPath(prev => prev.slice(0, -1));
   };
 
   const filteredFiles = files.filter(file => 
@@ -79,57 +53,78 @@ const FilesList = () => {
   );
 
   return (
-    <div className="w-full max-w-5xl mx-auto animate-slide-up">
-      <div className="bg-card rounded-lg border border-border overflow-hidden shadow-sm">
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <div className="flex items-center w-1/2">
-            <div className="relative w-full">
+    <div className="w-full max-w-6xl mx-auto animate-fade-in">
+      <div className="bg-white rounded-lg border shadow-sm">
+        {/* Header with breadcrumb and actions */}
+        <div className="flex items-center justify-between p-4 border-b">
+          <div className="flex items-center space-x-2">
+            {currentPath.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleFolderUp}
+                className="mr-2"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </Button>
+            )}
+            <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">My Drive</span>
+              {currentPath.map((folder, index) => (
+                <div key={folder.id} className="flex items-center space-x-2">
+                  <span>/</span>
+                  <span className="text-foreground">{folder.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="relative w-64">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
               <Input
                 type="text"
-                placeholder="Search Your Files"
+                placeholder="Search files"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9 bg-white border-input input-highlight"
+                className="pl-9 bg-white"
               />
             </div>
+            <NewFolderDialog onFolderCreated={fetchFiles}>
+              <Button variant="outline" size="sm" className="flex items-center space-x-1">
+                <Plus className="h-4 w-4" />
+                <span>Create Folder</span>
+              </Button>
+            </NewFolderDialog>
           </div>
-          <NewFolderDialog onFolderCreated={fetchFiles} />
         </div>
-        
-        <div className="p-2">
-          <div className="flex items-center p-3 text-sm text-muted-foreground font-medium">
-            <div className="flex-shrink-0 mr-4 w-6">
-              <input type="checkbox" className="rounded border-input" />
-            </div>
-            <div className="flex-grow">NAME</div>
-            <div className="flex-shrink-0 w-24 text-right mr-4">SIZE</div>
-            <div className="flex-shrink-0 w-32 text-right mr-4">LAST CHANGED</div>
-            <div className="flex-shrink-0 w-20"></div>
-          </div>
-          
+
+        {/* File list header */}
+        <div className="grid grid-cols-12 gap-4 px-6 py-2 border-b text-sm font-medium text-muted-foreground">
+          <div className="col-span-6">Name</div>
+          <div className="col-span-2 text-right">Size</div>
+          <div className="col-span-3 text-right">Last Changed</div>
+          <div className="col-span-1"></div>
+        </div>
+
+        {/* File list content */}
+        <div className="divide-y divide-border">
           {loading ? (
             <div className="space-y-2 p-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 bg-muted animate-pulse rounded-md"></div>
+                <div key={i} className="h-12 bg-muted/50 animate-pulse rounded-md" />
               ))}
             </div>
           ) : filteredFiles.length === 0 ? (
-            <div className="text-center py-10 text-muted-foreground">
+            <div className="text-center py-12 text-muted-foreground">
               <p>No files found</p>
             </div>
           ) : (
-            <div className="space-y-1">
+            <div>
               {filteredFiles.map((file) => (
                 <FileItem
                   key={file.id}
-                  id={file.id}
-                  name={file.name}
-                  size={file.size}
-                  date={file.date}
-                  isFolder={file.isFolder}
-                  driveLink={file.driveLink}
-                  onDelete={handleDeleteFile}
+                  file={file}
+                  onFolderClick={handleFolderClick}
                 />
               ))}
             </div>

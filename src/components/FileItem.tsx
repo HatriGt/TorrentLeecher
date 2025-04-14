@@ -1,40 +1,47 @@
-
 import { useState } from "react";
-import { File, Folder, ExternalLink, Trash2, Download } from "lucide-react";
+import { File, Folder, ExternalLink, Download, Play, Music } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { DriveItem } from "@/types/torrent";
+import VideoPlayer from "./VideoPlayer";
+import AudioPlayer from "./AudioPlayer";
 
 interface FileItemProps {
-  id: string;
-  name: string;
-  size: string | number;
-  isFolder?: boolean;
-  date?: string;
-  driveLink?: string;
-  onDelete?: (id: string) => void;
+  file: DriveItem;
+  onFolderClick: (folder: DriveItem) => void;
 }
 
-const FileItem = ({
-  id,
-  name,
-  size,
-  isFolder = false,
-  date,
-  driveLink,
-  onDelete,
-}: FileItemProps) => {
+const FileItem = ({ file, onFolderClick }: FileItemProps) => {
   const [isHovered, setIsHovered] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isVideoOpen, setIsVideoOpen] = useState(false);
+  const [isAudioOpen, setIsAudioOpen] = useState(false);
   const { toast } = useToast();
 
-  // Format file size if it's a number
-  const formattedSize = typeof size === "number" ? formatFileSize(size) : size;
-  const formattedDate = date ? formatDate(date) : "Today";
+  const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+  const isVideo = file.mimeType?.includes('video/') || file.name.match(/\.(mp4|mkv|avi|mov|wmv|flv|webm)$/i);
+  const isAudio = file.mimeType?.includes('audio/') || file.name.match(/\.(mp3|wav|ogg|flac|aac|m4a)$/i);
+  const formattedSize = file.size ? formatFileSize(parseInt(file.size)) : '-';
+  const formattedDate = file.modifiedTime ? formatDate(file.modifiedTime) : 'Today';
 
-  const handleOpenLink = () => {
-    if (driveLink) {
-      window.open(driveLink, "_blank", "noopener,noreferrer");
+  const handleClick = () => {
+    if (isFolder) {
+      onFolderClick(file);
+    }
+  };
+
+  const handleDoubleClick = () => {
+    if (isVideo) {
+      setIsVideoOpen(true);
+    } else if (isAudio) {
+      setIsAudioOpen(true);
+    }
+  };
+
+  const handleOpenLink = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (file.webViewLink) {
+      window.open(file.webViewLink, "_blank", "noopener,noreferrer");
     } else {
       toast({
         title: "Error",
@@ -44,11 +51,12 @@ const FileItem = ({
     }
   };
 
-  const handleDownload = () => {
-    if (driveLink) {
+  const handleDownload = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (file.webViewLink) {
       const link = document.createElement('a');
-      link.href = driveLink;
-      link.setAttribute('download', name);
+      link.href = file.webViewLink;
+      link.setAttribute('download', file.name);
       link.setAttribute('target', '_blank');
       document.body.appendChild(link);
       link.click();
@@ -62,91 +70,103 @@ const FileItem = ({
     }
   };
 
-  const handleDelete = async () => {
-    if (onDelete) {
-      try {
-        setIsDeleting(true);
-        await onDelete(id);
-      } catch (error) {
-        console.error("Error during delete:", error);
-      } finally {
-        setIsDeleting(false);
-      }
+  const handlePlayMedia = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isVideo) {
+      setIsVideoOpen(true);
+    } else if (isAudio) {
+      setIsAudioOpen(true);
     }
   };
 
   return (
-    <div
-      className={`flex items-center p-3 ${
-        isHovered ? "bg-muted/50" : ""
-      } rounded-lg transition-colors duration-200 group animate-fade-in`}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <div className="flex-shrink-0 mr-4 w-6">
-        <input type="checkbox" className="rounded border-input" />
+    <>
+      <div
+        className="grid grid-cols-12 gap-4 px-6 py-2 hover:bg-accent/5 cursor-pointer group"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
+      >
+        <div className="col-span-6 flex items-center space-x-3">
+          <div className="flex-shrink-0">
+            {isFolder ? (
+              <Folder className="h-5 w-5 text-blue-500" />
+            ) : isVideo ? (
+              <Play className="h-5 w-5 text-green-500" />
+            ) : isAudio ? (
+              <Music className="h-5 w-5 text-purple-500" />
+            ) : (
+              <File className="h-5 w-5 text-gray-500" />
+            )}
+          </div>
+          <span className="text-sm font-medium text-foreground truncate">
+            {file.name}
+          </span>
+        </div>
+        <div className="col-span-2 text-right">
+          <span className="text-sm text-muted-foreground">{formattedSize}</span>
+        </div>
+        <div className="col-span-3 text-right">
+          <span className="text-sm text-muted-foreground">{formattedDate}</span>
+        </div>
+        <div className="col-span-1 flex justify-end">
+          <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            {(isVideo || isAudio) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                onClick={handlePlayMedia}
+                title={isVideo ? "Play video" : "Play audio"}
+              >
+                <Play className="h-4 w-4" />
+              </Button>
+            )}
+            {file.webViewLink && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                onClick={handleOpenLink}
+                title="Open in Google Drive"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </Button>
+            )}
+            {!isFolder && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                onClick={handleDownload}
+                title="Download file"
+              >
+                <Download className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
-      <div className="flex-shrink-0 mr-4">
-        {isFolder ? (
-          <Folder
-            size={20}
-            className="text-amber-500"
-            fill="rgba(245, 158, 11, 0.2)"
-          />
-        ) : (
-          <File
-            size={20}
-            className="text-primary"
-            stroke="rgba(31, 139, 255, 0.8)"
-          />
-        )}
-      </div>
-      <div className="flex-grow truncate">
-        <p className="text-foreground truncate" title={name}>
-          {name}
-        </p>
-      </div>
-      <div className="flex-shrink-0 w-24 text-right mr-4 text-sm text-muted-foreground">
-        {formattedSize}
-      </div>
-      <div className="flex-shrink-0 w-32 text-right mr-4 text-sm text-muted-foreground">
-        {formattedDate}
-      </div>
-      <div className="flex-shrink-0 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-        {driveLink && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0 text-primary hover:text-primary hover:bg-primary/10"
-            onClick={handleOpenLink}
-            title="Open in Google Drive"
-          >
-            <ExternalLink size={16} />
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 w-8 p-0 text-primary hover:text-primary hover:bg-primary/10"
-          onClick={handleDownload}
-          title="Download file"
-        >
-          <Download size={16} />
-        </Button>
-        {onDelete && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10"
-            onClick={handleDelete}
-            disabled={isDeleting}
-            title="Delete file"
-          >
-            <Trash2 size={16} />
-          </Button>
-        )}
-      </div>
-    </div>
+
+      {isVideo && (
+        <VideoPlayer
+          isOpen={isVideoOpen}
+          onClose={() => setIsVideoOpen(false)}
+          videoUrl={file.webViewLink || ''}
+          title={file.name}
+        />
+      )}
+
+      {isAudio && (
+        <AudioPlayer
+          isOpen={isAudioOpen}
+          onClose={() => setIsAudioOpen(false)}
+          audioUrl={file.webViewLink || ''}
+          title={file.name}
+        />
+      )}
+    </>
   );
 };
 

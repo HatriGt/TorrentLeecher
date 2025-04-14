@@ -34,3 +34,20 @@ export interface FolderStructure {
   driveLink: string;
   children?: FolderStructure[];
 }
+
+export interface DriveItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  modifiedTime: string;
+  webViewLink: string;
+  parents: string[];
+  children?: DriveItem[];
+}
+
+export interface DriveResponse {
+  success: boolean;
+  data: DriveItem[];
+  error?: string;
+}

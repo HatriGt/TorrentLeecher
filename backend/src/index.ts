@@ -701,6 +701,173 @@ const cleanupDownload = (engine: TorrentEngine) => {
   activePeers.delete(magnetURI);
 }
 
+// Interface for file/folder response
+interface DriveItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  modifiedTime: string;
+  webViewLink: string;
+  parents: string[];
+}
+
+// Get files and folders from Google Drive
+app.get('/api/drive/files', async (req, res) => {
+  try {
+    const { folderId = env.GOOGLE_DRIVE_FOLDER_ID, recursive = false } = req.query;
+    
+    const files = await listFilesAndFolders(folderId as string, recursive === 'true');
+    res.json({ success: true, data: files });
+  } catch (error) {
+    console.error('Error getting files:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Failed to get files' 
+    });
+  }
+});
+
+// Get specific folder contents
+app.get('/api/drive/folders/:folderId', async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    const files = await listFilesAndFolders(folderId, false);
+    res.json({ success: true, data: files });
+  } catch (error) {
+    console.error('Error getting folder contents:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Failed to get folder contents' 
+    });
+  }
+});
+
+// Helper function to list files and folders
+async function listFilesAndFolders(folderId: string, recursive: boolean): Promise<DriveItem[]> {
+  try {
+    const query = `'${folderId}' in parents and trashed = false`;
+    const response = await drive.files.list({
+      q: query,
+      fields: 'files(id, name, mimeType, size, modifiedTime, webViewLink, parents)',
+      orderBy: 'name',
+      pageSize: 1000,
+      supportsAllDrives: true
+    });
+
+    const files = response.data.files || [];
+    
+    if (recursive) {
+      const folders = files.filter(file => file.mimeType === 'application/vnd.google-apps.folder');
+      for (const folder of folders) {
+        const subFiles = await listFilesAndFolders(folder.id, true);
+        files.push(...subFiles);
+      }
+    }
+
+    return files as DriveItem[];
+  } catch (error) {
+    console.error('Error listing files:', error);
+    throw error;
+  }
+}
+
+// Helper function to get MIME type based on file extension
+function getMimeType(filename: string) {
+  const ext = filename.toLowerCase().split('.').pop();
+  const mimeTypes: { [key: string]: string } = {
+    'mkv': 'video/x-matroska',
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'avi': 'video/x-msvideo',
+    'mov': 'video/quicktime',
+    'wmv': 'video/x-ms-wmv',
+    'flv': 'video/x-flv',
+    'mp3': 'audio/mpeg',
+    'wav': 'audio/wav',
+    'ogg': 'audio/ogg',
+    'flac': 'audio/flac',
+    'm4a': 'audio/mp4',
+  };
+  return mimeTypes[ext || ''] || 'application/octet-stream';
+}
+
+// Stream video from Google Drive
+app.get('/api/stream/:fileId', async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const range = req.headers.range;
+
+    // Get file metadata
+    const file = await drive.files.get({
+      fileId,
+      fields: 'size, mimeType, name',
+      supportsAllDrives: true
+    });
+
+    if (!file.data) {
+      return res.status(404).send('File not found');
+    }
+
+    const fileSize = parseInt(file.data.size || '0');
+    const fileName = file.data.name || '';
+    
+    // Determine the correct MIME type
+    const mimeType = getMimeType(fileName);
+
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+
+    if (range) {
+      // Handle range request (partial content)
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': mimeType,
+      });
+
+      // Stream the file content
+      const stream = await drive.files.get({
+        fileId,
+        alt: 'media',
+        headers: {
+          Range: `bytes=${start}-${end}`
+        }
+      }, {
+        responseType: 'stream'
+      });
+
+      stream.data.pipe(res);
+    } else {
+      // Handle full content request
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': mimeType,
+      });
+
+      const stream = await drive.files.get({
+        fileId,
+        alt: 'media'
+      }, {
+        responseType: 'stream'
+      });
+
+      stream.data.pipe(res);
+    }
+  } catch (error) {
+    console.error('Error streaming video:', error);
+    res.status(500).send('Error streaming video');
+  }
+});
+
 // Start server
 httpServer.listen(env.PORT, () => {
   console.log(`Server running on port ${env.PORT}`)
