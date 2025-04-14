@@ -9,6 +9,7 @@ import dotenv from 'dotenv'
 import path from 'path'
 import fs from 'fs'
 import { createClient } from '@supabase/supabase-js'
+import fetch from 'node-fetch'
 
 // Type definitions
 declare module 'torrent-stream' {
@@ -110,19 +111,118 @@ const magnetLinkSchema = z.object({
 
 // Active downloads tracking
 interface DownloadEngine {
-  engine: any
-  progress: number
-  status: 'downloading' | 'uploading' | 'completed' | 'error'
-  error?: string
+  engine: TorrentEngine;
+  progress: number;
+  status: 'downloading' | 'uploading' | 'completed' | 'error';
+  error?: string;
 }
 
 const activeDownloads = new Map<string, DownloadEngine>()
 
-// Cleanup function for completed downloads
-const cleanupDownload = (engine: any) => {
-  engine.destroy()
-  activeDownloads.delete(engine.magnetURI)
+// Add this near the top where other interfaces are defined
+interface TorrentState {
+  isUploading: boolean;
+  uploadComplete: boolean;
 }
+
+// Add this near other state tracking variables
+const torrentStates = new Map<string, TorrentState>();
+
+// Add after TorrentState interface
+interface TorrentPeer {
+  address: string;
+  port: number;
+  id?: string;
+  connected?: boolean;
+}
+
+// Add after torrentStates declaration
+const activePeers = new Map<string, Set<string>>(); // magnetLink -> Set of peer addresses
+
+// Add after the imports but before other interfaces
+interface TorrentEngine {
+  magnetURI: string;
+  infoHash: string;
+  destroy(): void;
+  on(event: string, callback: (...args: any[]) => void): void;
+  torrent: {
+    name: string;
+    length: number;
+  };
+  files: Array<{
+    name: string;
+    length: number;
+    path: string;
+    select(): void;
+    createReadStream(): NodeJS.ReadableStream;
+  }>;
+  swarm: {
+    downloaded: number;
+    downloadSpeed(): number;
+    uploaded: number;
+    wires: Array<{
+      address: string;
+      port: number;
+    }>;
+  };
+}
+
+// Function to fetch and parse trackers
+async function getTrackersFromAPI(): Promise<string[]> {
+  try {
+    const response = await fetch('https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt')
+    const text = await response.text()
+    return text
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+  } catch (error) {
+    console.error('Error fetching trackers:', error)
+    return [] // Return empty array if fetch fails
+  }
+}
+
+// Default trackers as fallback
+const defaultTrackers = [
+  "udp://tracker.opentrackr.org:1337/announce",
+  "udp://tracker.openbittorrent.com:6969/announce",
+  "udp://open.stealth.si:80/announce",
+  "udp://exodus.desync.com:6969/announce",
+  "udp://tracker.opentrackr.org:1337/announce",
+  "udp://tracker.openbittorrent.com:6969/announce",
+  "udp://open.stealth.si:80/announce",
+  "udp://tracker.torrent.eu.org:451/announce",
+  "udp://explodie.org:6969/announce",
+  "udp://tracker.skyts.net:6969/announce",
+  "udp://tracker.ololosh.space:6969/announce",
+  "udp://retracker01-msk-virt.corbina.net:80/announce",
+  "udp://leet-tracker.moe:1337/announce",
+  "udp://isk.richardsw.club:6969/announce",
+  "udp://bt.ktrackers.com:6666/announce",
+  "udp://open.demonii.com:1337/announce",
+  "http://tracker.trackerfix.com:80/announce",
+  "udp://9.rarbg.me:2710/announce"
+]
+
+// Keep track of the latest trackers
+let cachedTrackers: string[] = [...defaultTrackers]
+
+// Update trackers periodically (every 6 hours)
+async function updateTrackers() {
+  try {
+    const newTrackers = await getTrackersFromAPI()
+    if (newTrackers.length > 0) {
+      cachedTrackers = [...new Set([...defaultTrackers, ...newTrackers])] // Merge and deduplicate
+      console.log(`Updated trackers list. Total trackers: ${cachedTrackers.length}`)
+    }
+  } catch (error) {
+    console.error('Failed to update trackers:', error)
+  }
+}
+
+// Initial update and schedule periodic updates
+updateTrackers()
+setInterval(updateTrackers, 6 * 60 * 60 * 1000) // Update every 6 hours
 
 // Function to create or get folder in Google Drive
 async function createOrGetFolder(folderName: string, parentId?: string) {
@@ -205,353 +305,6 @@ io.on('connection', (socket) => {
 })
 
 // Handle magnet link download and upload
-// app.post('/api/download', async (req, res) => {
-//   try {
-//     console.log('Received download request:', req.body)
-//     const { magnetLink, socketId } = magnetLinkSchema.parse(req.body)
-    
-//     // Check if download is already in progress
-//     if (activeDownloads.has(magnetLink)) {
-//       console.log('Download already in progress for:', magnetLink)
-//       return res.status(400).json({ 
-//         success: false, 
-//         error: 'Download already in progress' 
-//       })
-//     }
-
-//     const socket = io.sockets.sockets.get(socketId)
-//     if (!socket) {
-//       console.log('Invalid socket ID:', socketId)
-//       return res.status(400).json({ 
-//         success: false, 
-//         error: 'Invalid socket ID' 
-//       })
-//     }
-
-//     console.log('Starting torrent download with magnet link:', magnetLink)
-    
-//     // Create downloads directory if it doesn't exist
-//     if (!fs.existsSync(env.DOWNLOAD_DIR)) {
-//       fs.mkdirSync(env.DOWNLOAD_DIR, { recursive: true })
-//     }
-
-//     // Start downloading with more options
-//     const engine = torrentStream(magnetLink, {
-//       path: env.DOWNLOAD_DIR,
-//       connections: 200,
-//       uploads: 20,
-//       verify: true,
-//       dht: true,
-//       tracker: true,
-//       // Add DHT bootstrap nodes
-//       dhtPort: 6881,
-//       dhtBootstrap: [
-//         'router.bittorrent.com:6881',
-//         'dht.transmissionbt.com:6881',
-//         'router.utorrent.com:6881',
-//         'dht.aelitis.com:6881'
-//       ],
-//       // Add more aggressive metadata settings
-//       metadataTimeout: 30000, // 30 seconds timeout for metadata
-//       metadataMaxConns: 50, // More connections for metadata
-//       // Add more trackers
-//       trackers: [
-//         'udp://tracker.opentrackr.org:1337/announce',
-//         'udp://tracker.openbittorrent.com:6969/announce',
-//         'udp://open.stealth.si:80/announce',
-//         'udp://tracker.torrent.eu.org:451/announce',
-//         'udp://explodie.org:6969/announce',
-//         'udp://tracker.skyts.net:6969/announce',
-//         'udp://tracker.ololosh.space:6969/announce',
-//         'udp://retracker01-msk-virt.corbina.net:80/announce',
-//         'udp://leet-tracker.moe:1337/announce',
-//         'udp://isk.richardsw.club:6969/announce',
-//         'udp://bt.ktrackers.com:6666/announce',
-//         'udp://open.demonii.com:1337/announce',
-//         'http://tracker.trackerfix.com:80/announce',
-//         'udp://9.rarbg.me:2710/announce',
-//         'udp://9.rarbg.to:2710/announce'
-//       ],
-//       maxWebConns: 50,
-//       maxConns: 200,
-//       peerOpts: {
-//         maxConnections: 200
-//       }
-//     })
-
-//     activeDownloads.set(magnetLink, {
-//       engine,
-//       progress: 0,
-//       status: 'downloading'
-//     })
-
-//     // Log torrent metadata when ready
-//     engine.on('ready', () => {
-//       console.log('Torrent ready:', {
-//         infoHash: engine.infoHash,
-//         name: engine.torrent.name,
-//         files: engine.files.map(f => ({ 
-//           name: f.name, 
-//           length: f.length,
-//           path: f.path 
-//         })),
-//         totalSize: engine.torrent.length,
-//         activePeers: engine.swarm.wires.length
-//       })
-
-//       // Select all files for download
-//       engine.files.forEach(file => {
-//         console.log(`Selecting file for download: ${file.name}`)
-//         file.select()
-//       })
-//     })
-
-//     let lastProgressUpdate = Date.now()
-//     engine.on('download', () => {
-//       const now = Date.now()
-//       if (now - lastProgressUpdate > 1000) {
-//         const progress = (engine.swarm.downloaded / engine.torrent.length * 100).toFixed(1)
-//         const download = activeDownloads.get(magnetLink)
-//         if (download) {
-//           download.progress = parseFloat(progress)
-//           const stats = { 
-//             progress,
-//             downloadSpeed: engine.swarm.downloadSpeed(),
-//             uploaded: engine.swarm.uploaded,
-//             total: engine.torrent.length,
-//             peers: engine.swarm.wires.length,
-//             activePeers: engine.swarm.wires.filter(wire => wire.downloaded > 0).length
-//           }
-//           console.log('Download progress:', stats)
-//           socket.emit('download-progress', stats)
-//         }
-//         lastProgressUpdate = now
-//       }
-//     })
-
-//     // Add metadata progress logging
-//     engine.on('metadata', () => {
-//       console.log('Metadata received:', {
-//         infoHash: engine.infoHash,
-//         name: engine.torrent.name,
-//         files: engine.files.map(f => f.name),
-//         totalSize: engine.torrent.length
-//       })
-//     })
-
-//     // Add DHT logging
-//     engine.on('dht', (nodes) => {
-//       console.log('DHT nodes discovered:', nodes.length)
-//     })
-
-//     // Add more detailed peer logging
-//     engine.on('peer', (peer: string) => {
-//       const [address, port] = peer.split(':')
-//       console.log('Peer discovered:', {
-//         address,
-//         port: parseInt(port),
-//         totalPeers: engine.swarm.wires.length,
-//         downloaded: engine.swarm.downloaded,
-//         downloadSpeed: engine.swarm.downloadSpeed(),
-//         metadataProgress: engine.metadataProgress,
-//         metadataComplete: engine.metadataComplete
-//       })
-//     })
-
-//     // Add connection state logging
-//     engine.on('wire', (wire) => {
-//       console.log('New wire connection:', {
-//         address: wire.peerAddress,
-//         port: wire.peerPort,
-//         type: wire.type,
-//         handshake: wire.handshake
-//       })
-//     })
-
-//     engine.on('uninterested', () => {
-//       console.log('Peer is uninterested in our pieces')
-//     })
-
-//     engine.on('interested', () => {
-//       console.log('Peer is interested in our pieces')
-//     })
-
-//     engine.on('idle', async () => {
-//       try {
-//         console.log('Download completed, starting upload to Google Drive...')
-//         const download = activeDownloads.get(magnetLink)
-//         if (download) {
-//           download.status = 'uploading'
-//         }
-
-//         // Get the torrent name as the main folder name
-//         const torrentName = engine.torrent.name
-//         console.log('Creating main folder:', torrentName)
-//         const mainFolderId = await createOrGetFolder(torrentName)
-
-//         // Upload to Google Drive
-//         for (const file of engine.files) {
-//           console.log(`Processing file for upload: ${file.name}`)
-//           const filePath = path.join(env.DOWNLOAD_DIR, file.path)
-          
-//           // Get the relative path without the torrent name
-//           const relativePath = path.relative(path.join(env.DOWNLOAD_DIR, torrentName), filePath)
-//           const pathParts = relativePath.split(path.sep)
-          
-//           // Create folder structure
-//           let currentFolderId = mainFolderId
-//           if (pathParts.length > 1) {
-//             // Create intermediate folders if needed
-//             for (let i = 0; i < pathParts.length - 1; i++) {
-//               currentFolderId = await createOrGetFolder(pathParts[i], currentFolderId)
-//             }
-//           }
-
-//           if (!fs.existsSync(filePath)) {
-//             console.error(`File does not exist at path: ${filePath}`)
-//             continue
-//           }
-
-//           // Create file metadata
-//           const fileMetadata = {
-//             name: path.basename(file.path),
-//             parents: [currentFolderId]
-//           }
-
-//           // Create media
-//           const media = {
-//             mimeType: file.type || 'application/octet-stream',
-//             body: fs.createReadStream(filePath)
-//           }
-
-//           try {
-//             console.log('Uploading file to Google Drive...')
-//             // Upload file
-//             const response = await drive.files.create({
-//               requestBody: fileMetadata,
-//               media: media,
-//               fields: 'id, name, webViewLink, parents',
-//               supportsAllDrives: true
-//             }).then(res => res.data)
-
-//             console.log('File uploaded successfully:', {
-//               fileId: response.id,
-//               fileName: response.name,
-//               webViewLink: response.webViewLink,
-//               parentFolder: currentFolderId
-//             })
-
-//             // Share the file with the user
-//             console.log('Setting file permissions...')
-//             await drive.permissions.create({
-//               fileId: response.id,
-//               requestBody: {
-//                 role: 'writer',
-//                 type: 'user',
-//                 emailAddress: env.GOOGLE_DRIVE_USER_EMAIL
-//               },
-//               supportsAllDrives: true,
-//               fields: 'id'
-//             })
-
-//             console.log('File permissions set successfully')
-
-//             socket.emit('download-complete', {
-//               name: file.name,
-//               size: file.length,
-//               driveLink: response.webViewLink,
-//               parentFolder: currentFolderId,
-//               isFolder: false,
-//               path: relativePath
-//             })
-
-//             // Clean up local file after upload
-//             fs.unlink(filePath, (err) => {
-//               if (err) {
-//                 console.error('Error deleting local file:', err)
-//               } else {
-//                 console.log('Local file cleaned up successfully')
-//                 
-//                 // After file is deleted, check if parent directory is empty and delete it
-//                 const parentDir = path.dirname(filePath)
-//                 fs.readdir(parentDir, (err, files) => {
-//                   if (err) {
-//                     console.error('Error reading parent directory:', err)
-//                     return
-//                   }
-//                   
-//                   // If directory is empty, delete it
-//                   if (files.length === 0) {
-//                     fs.rmdir(parentDir, (err) => {
-//                       if (err) {
-//                         console.error('Error deleting empty parent directory:', err)
-//                       } else {
-//                         console.log('Empty parent directory cleaned up successfully')
-//                       }
-//                     })
-//                   }
-//                 })
-//               }
-//             })
-//           } catch (uploadError) {
-//             console.error('Detailed upload error:', uploadError)
-//             socket.emit('download-error', { 
-//               error: `Failed to upload ${file.name} to Google Drive: ${uploadError.message}` 
-//             })
-//           }
-//         }
-
-//         // Emit the folder structure after all files are uploaded
-//         socket.emit('folder-structure-complete', {
-//           name: torrentName,
-//           id: mainFolderId,
-//           isFolder: true,
-//           driveLink: `https://drive.google.com/drive/folders/${mainFolderId}`
-//         })
-
-//         if (download) {
-//           download.status = 'completed'
-//           console.log('Download and upload process completed')
-//         }
-//         cleanupDownload(engine)
-//       } catch (error) {
-//         console.error('Error handling download:', error)
-//         const download = activeDownloads.get(magnetLink)
-//         if (download) {
-//           download.status = 'error'
-//           download.error = 'Failed to process download'
-//         }
-//         socket.emit('download-error', { error: 'Failed to process download' })
-//         cleanupDownload(engine)
-//       }
-//     })
-
-//     // Add more detailed error logging
-//     engine.on('error', (error: Error) => {
-//       console.error('Torrent error:', {
-//         message: error.message,
-//         stack: error.stack,
-//         swarm: {
-//           downloaded: engine.swarm.downloaded,
-//           downloadSpeed: engine.swarm.downloadSpeed(),
-//           uploadSpeed: engine.swarm.uploadSpeed(),
-//           peers: engine.swarm.wires.length
-//         }
-//       })
-//       socket.emit('download-error', { error: error.message })
-//       cleanupDownload(engine)
-//     })
-
-//     res.json({ success: true, message: 'Download started' })
-//   } catch (error) {
-//     console.error('Error starting download:', error)
-//     res.status(400).json({ 
-//       success: false, 
-//       error: error instanceof Error ? error.message : 'Unknown error' 
-//     })
-//   }
-// })
-
 app.post('/api/download', async (req, res) => {
   try {
     console.log('Received download request:', req.body)
@@ -576,41 +329,16 @@ app.post('/api/download', async (req, res) => {
     }
 
     console.log('Starting torrent download with magnet link:', magnetLink)
-    
-    // Create downloads directory if it doesn't exist
-    if (!fs.existsSync(env.DOWNLOAD_DIR)) {
-      fs.mkdirSync(env.DOWNLOAD_DIR, { recursive: true })
-    }
 
     // Start downloading with more options
     const engine = torrentStream(magnetLink, {
-      path: env.DOWNLOAD_DIR,
       connections: 100,
       uploads: 10,
       verify: true,
       dht: true,
       tracker: true,
-      trackers: [
-        "udp://tracker.opentrackr.org:1337/announce",
-        "udp://tracker.openbittorrent.com:6969/announce",
-        "udp://open.stealth.si:80/announce",
-        "udp://exodus.desync.com:6969/announce",
-        "udp://tracker.opentrackr.org:1337/announce",
-        "udp://tracker.openbittorrent.com:6969/announce",
-        "udp://open.stealth.si:80/announce",
-        "udp://tracker.torrent.eu.org:451/announce",
-        "udp://explodie.org:6969/announce",
-        "udp://tracker.skyts.net:6969/announce",
-        "udp://tracker.ololosh.space:6969/announce",
-        "udp://retracker01-msk-virt.corbina.net:80/announce",
-        "udp://leet-tracker.moe:1337/announce",
-        "udp://isk.richardsw.club:6969/announce",
-        "udp://bt.ktrackers.com:6666/announce",
-        "udp://open.demonii.com:1337/announce",
-        "http://tracker.trackerfix.com:80/announce",
-        "udp://9.rarbg.me:2710/announce"
-      ],
-    });
+      trackers: cachedTrackers
+    })
 
     activeDownloads.set(magnetLink, {
       engine,
@@ -661,162 +389,185 @@ app.post('/api/download', async (req, res) => {
       }
     })
 
-    // Add peer discovery logging
-    engine.on('peer', (peer: any) => {
-      console.log('Peer discovered:', {
-        address: peer.address,
-        port: peer.port,
-        totalPeers: engine.swarm.wires.length
-      })
-    })
+    // Update the peer handling section
+    engine.on('peer', (peer: TorrentPeer | string) => {
+      try {
+        // Initialize peer set for this torrent if not exists
+        if (!activePeers.has(magnetLink)) {
+          activePeers.set(magnetLink, new Set());
+        }
+        
+        // Parse peer address and port
+        let peerAddress: string;
+        let peerPort: number;
+        
+        if (typeof peer === 'string') {
+          const [address, portStr] = peer.split(':');
+          peerAddress = address;
+          peerPort = parseInt(portStr, 10);
+        } else {
+          peerAddress = peer.address;
+          peerPort = peer.port;
+        }
+
+        const peerKey = `${peerAddress}:${peerPort}`;
+        const peers = activePeers.get(magnetLink);
+        
+        if (peers && !peers.has(peerKey)) {
+          peers.add(peerKey);
+          console.log('New peer discovered:', {
+            address: peerAddress,
+            port: peerPort,
+            totalPeers: peers.size,
+            activePeers: Array.from(peers)
+          });
+
+          // Emit peer discovery event to client
+          socket.emit('peer-discovered', {
+            address: peerAddress,
+            port: peerPort,
+            totalPeers: peers.size
+          });
+        }
+      } catch (error) {
+        console.error('Error handling peer:', error);
+      }
+    });
+
+    // In the download endpoint, before setting up the engine
+    const torrentState: TorrentState = {
+      isUploading: false,
+      uploadComplete: false
+    };
+    torrentStates.set(magnetLink, torrentState);
 
     engine.on('idle', async () => {
       try {
-        console.log('Download completed, starting upload to Google Drive...')
-        const download = activeDownloads.get(magnetLink)
-        if (download) {
-          download.status = 'uploading'
+        const state = torrentStates.get(magnetLink);
+        if (!state || state.isUploading || state.uploadComplete) {
+          console.log('Skipping upload - already in progress or completed');
+          return;
         }
 
-        // Get the torrent name as the main folder name
-        const torrentName = engine.torrent.name
-        console.log('Creating main folder:', torrentName)
-        const mainFolderId = await createOrGetFolder(torrentName)
+        console.log('Download completed, starting upload to Google Drive...');
+        state.isUploading = true;
+        
+        const download = activeDownloads.get(magnetLink);
+        if (download) {
+          download.status = 'uploading';
+        }
 
-        // Upload to Google Drive
-        for (const file of engine.files) {
-          console.log(`Processing file for upload: ${file.name}`)
-          const filePath = path.join(env.DOWNLOAD_DIR, file.path)
+        try {
+          // Get the torrent name as the main folder name
+          const torrentName = engine.torrent.name;
+          console.log('Creating main folder:', torrentName);
           
-          // Get the relative path without the torrent name
-          const relativePath = path.relative(path.join(env.DOWNLOAD_DIR, torrentName), filePath)
-          const pathParts = relativePath.split(path.sep)
-          
-          // Create folder structure
-          let currentFolderId = mainFolderId
-          if (pathParts.length > 1) {
-            // Create intermediate folders if needed
-            for (let i = 0; i < pathParts.length - 1; i++) {
-              currentFolderId = await createOrGetFolder(pathParts[i], currentFolderId)
+          // Create main folder
+          const mainFolderId = await createOrGetFolder(torrentName);
+          if (!mainFolderId) {
+            throw new Error('Failed to create or get main folder');
+          }
+
+          // Upload to Google Drive
+          for (const file of engine.files) {
+            console.log(`Processing file for upload: ${file.name}`);
+            
+            try {
+              // Create file metadata with proper type assertion
+              const fileMetadata: { name: string; parents: string[] } = {
+                name: path.basename(file.path),
+                parents: [mainFolderId]
+              };
+
+              // Create a readable stream from the torrent file
+              const fileStream = file.createReadStream();
+
+              console.log('Uploading file to Google Drive...');
+              const uploadResponse = await drive.files.create({
+                requestBody: fileMetadata,
+                media: {
+                  mimeType: 'application/octet-stream',
+                  body: fileStream
+                },
+                fields: 'id, name, webViewLink',
+                supportsAllDrives: true
+              });
+
+              if (!uploadResponse?.data) {
+                throw new Error('Upload failed - no response data');
+              }
+
+              const response = uploadResponse.data;
+
+              console.log('File uploaded successfully:', {
+                fileId: response.id,
+                fileName: response.name,
+                webViewLink: response.webViewLink
+              });
+
+              // Share the file with the user
+              console.log('Setting file permissions...');
+              await drive.permissions.create({
+                fileId: response.id,
+                requestBody: {
+                  role: 'writer',
+                  type: 'user',
+                  emailAddress: env.GOOGLE_DRIVE_USER_EMAIL
+                },
+                supportsAllDrives: true
+              });
+
+              console.log('File permissions set successfully');
+
+              socket.emit('download-complete', {
+                name: file.name,
+                size: file.length,
+                driveLink: response.webViewLink,
+                parentFolder: mainFolderId,
+                isFolder: false,
+                path: file.path
+              });
+            } catch (uploadError) {
+              console.error('Detailed upload error:', uploadError);
+              socket.emit('download-error', { 
+                error: `Failed to upload ${file.name} to Google Drive: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}` 
+              });
+              throw uploadError; // Re-throw to handle in outer catch
             }
           }
 
-          if (!fs.existsSync(filePath)) {
-            console.error(`File does not exist at path: ${filePath}`)
-            continue
+          // Emit folder structure only after successful upload
+          socket.emit('folder-structure-complete', {
+            name: torrentName,
+            id: mainFolderId,
+            isFolder: true,
+            driveLink: `https://drive.google.com/drive/folders/${mainFolderId}`
+          });
+
+          if (download) {
+            download.status = 'completed';
+            console.log('Download and upload process completed');
           }
 
-          // Create file metadata
-          const fileMetadata = {
-            name: path.basename(file.path),
-            parents: [currentFolderId]
-          }
-
-          // Create media
-          const media = {
-            mimeType: file.type || 'application/octet-stream',
-            body: fs.createReadStream(filePath)
-          }
-
-          try {
-            console.log('Uploading file to Google Drive...')
-            // Upload file
-            const response = await drive.files.create({
-              requestBody: fileMetadata,
-              media: media,
-              fields: 'id, name, webViewLink, parents',
-              supportsAllDrives: true
-            }).then(res => res.data)
-
-            console.log('File uploaded successfully:', {
-              fileId: response.id,
-              fileName: response.name,
-              webViewLink: response.webViewLink,
-              parentFolder: currentFolderId
-            })
-
-            // Share the file with the user
-            console.log('Setting file permissions...')
-            await drive.permissions.create({
-              fileId: response.id,
-              requestBody: {
-                role: 'writer',
-                type: 'user',
-                emailAddress: env.GOOGLE_DRIVE_USER_EMAIL
-              },
-              supportsAllDrives: true,
-              fields: 'id'
-            })
-
-            console.log('File permissions set successfully')
-
-            socket.emit('download-complete', {
-              name: file.name,
-              size: file.length,
-              driveLink: response.webViewLink,
-              parentFolder: currentFolderId,
-              isFolder: false,
-              path: relativePath
-            })
-
-            // Clean up local file after upload
-            fs.unlink(filePath, (err) => {
-              if (err) {
-                console.error('Error deleting local file:', err)
-              } else {
-                console.log('Local file cleaned up successfully')
-                
-                // After file is deleted, check if parent directory is empty and delete it
-                const parentDir = path.dirname(filePath)
-                fs.readdir(parentDir, (err, files) => {
-                  if (err) {
-                    console.error('Error reading parent directory:', err)
-                    return
-                  }
-                  
-                  // If directory is empty, delete it
-                  if (files.length === 0) {
-                    fs.rmdir(parentDir, (err) => {
-                      if (err) {
-                        console.error('Error deleting empty parent directory:', err)
-                      } else {
-                        console.log('Empty parent directory cleaned up successfully')
-                      }
-                    })
-                  }
-                })
-              }
-            })
-          } catch (uploadError) {
-            console.error('Detailed upload error:', uploadError)
-            socket.emit('download-error', { 
-              error: `Failed to upload ${file.name} to Google Drive: ${uploadError.message}` 
-            })
-          }
+          // Mark upload as complete
+          state.uploadComplete = true;
+        } finally {
+          state.isUploading = false;
+          cleanupDownload(engine);
+          torrentStates.delete(magnetLink);
         }
-
-        // Emit the folder structure after all files are uploaded
-        socket.emit('folder-structure-complete', {
-          name: torrentName,
-          id: mainFolderId,
-          isFolder: true,
-          driveLink: `https://drive.google.com/drive/folders/${mainFolderId}`
-        })
-
-        if (download) {
-          download.status = 'completed'
-          console.log('Download and upload process completed')
-        }
-        cleanupDownload(engine)
       } catch (error) {
-        console.error('Error handling download:', error)
-        const download = activeDownloads.get(magnetLink)
+        console.error('Error handling download:', error);
+        const download = activeDownloads.get(magnetLink);
         if (download) {
-          download.status = 'error'
-          download.error = 'Failed to process download'
+          download.status = 'error';
+          download.error = 'Failed to process download';
         }
-        socket.emit('download-error', { error: 'Failed to process download' })
-        cleanupDownload(engine)
+        socket.emit('download-error', { 
+          error: error instanceof Error ? error.message : 'Failed to process download' 
+        });
+        cleanupDownload(engine);
+        torrentStates.delete(magnetLink);
       }
     })
 
@@ -941,6 +692,14 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
     error: 'Internal server error' 
   })
 })
+
+// Update the cleanupDownload function with proper typing
+const cleanupDownload = (engine: TorrentEngine) => {
+  engine.destroy();
+  const magnetURI = engine.magnetURI;
+  activeDownloads.delete(magnetURI);
+  activePeers.delete(magnetURI);
+}
 
 // Start server
 httpServer.listen(env.PORT, () => {
