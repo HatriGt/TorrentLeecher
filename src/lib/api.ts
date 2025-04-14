@@ -1,4 +1,3 @@
-
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
@@ -59,6 +58,12 @@ export const startDownload = async (magnetLink: string): Promise<{ success: bool
 // Delete a file
 export const deleteFile = async (fileId: string): Promise<{ success: boolean }> => {
   const response = await api.delete(`/files/${fileId}`);
+  return response.data;
+};
+
+// Cancel a download
+export const cancelDownload = async (downloadId: string): Promise<{ success: boolean; message: string }> => {
+  const response = await api.post(`/downloads/${downloadId}/cancel`);
   return response.data;
 };
 

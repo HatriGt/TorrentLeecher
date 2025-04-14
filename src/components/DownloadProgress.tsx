@@ -7,6 +7,7 @@ import { formatBytes } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Folder, File, Download, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { cancelDownload } from "@/lib/api";
 
 interface FileInfo {
   name: string;
@@ -69,24 +70,49 @@ const DownloadProgress = ({
     const handleComplete = () => {
       setStatus('completed');
       setStats(prev => ({ ...prev, progress: 100 }));
+      toast({
+        title: "Download Complete",
+        description: "Your file has been downloaded and uploaded to Google Drive",
+      });
     };
 
-    const handleError = (error: any) => {
+    const handleError = (error: { error: string }) => {
       console.error('Download error:', error);
       setStatus('error');
+      toast({
+        title: "Download Error",
+        description: error.error || "An error occurred during download",
+        variant: "destructive",
+      });
     };
 
     const handleCancelled = () => {
       setStatus('cancelled');
+      toast({
+        title: "Download Cancelled",
+        description: "The download has been cancelled",
+      });
       if (onRemove) {
         onRemove();
       }
     };
 
-    socket.on('download-progress', handleProgress);
-    socket.on('download-complete', handleComplete);
-    socket.on('download-error', handleError);
-    socket.on('download-cancelled', handleCancelled);
+    // Wait for socket connection
+    if (!socket.connected) {
+      socket.once('connect', () => {
+        console.log('Socket connected, setting up event listeners');
+        setupEventListeners();
+      });
+    } else {
+      setupEventListeners();
+    }
+
+    function setupEventListeners() {
+      socket.on('download-progress', handleProgress);
+      socket.on('download-complete', handleComplete);
+      socket.on('download-error', handleError);
+      socket.on('download-cancelled', handleCancelled);
+    }
 
     return () => {
       socket.off('download-progress', handleProgress);
@@ -94,17 +120,15 @@ const DownloadProgress = ({
       socket.off('download-error', handleError);
       socket.off('download-cancelled', handleCancelled);
     };
-  }, [downloadId, onRemove]);
+  }, [downloadId, onRemove, toast]);
 
   const handleCancel = async () => {
     try {
       setIsCancelling(true);
-      const response = await fetch(`/api/downloads/${downloadId}/cancel`, {
-        method: 'POST'
-      });
+      const response = await cancelDownload(downloadId);
 
-      if (!response.ok) {
-        throw new Error('Failed to cancel download');
+      if (!response.success) {
+        throw new Error(response.message || 'Failed to cancel download');
       }
 
       toast({

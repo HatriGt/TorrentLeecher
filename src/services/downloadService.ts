@@ -2,7 +2,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { DownloadItem, FileItem, FolderStructure } from "@/types/torrent";
 import { io, Socket } from "socket.io-client";
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL;
+const API_BASE_URL = import.meta.env.VITE_API_URL;
+const WEBSOCKET_URL = import.meta.env.WEBSOCKET_URL || 'http://localhost:3000';
 
 // WebSocket connection
 let socket: Socket | null = null;
@@ -10,19 +11,38 @@ let socket: Socket | null = null;
 // Initialize WebSocket connection
 export const initializeSocket = () => {
   if (!socket) {
-    socket = io(API_BASE_URL, {
+    socket = io(WEBSOCKET_URL, {
+      path: '/socket.io',
       transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 5
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+      autoConnect: true,
+      forceNew: true
     });
 
     socket.on('connect', () => {
-      console.log('Connected to WebSocket server');
+      console.log('Connected to WebSocket server with ID:', socket?.id);
     });
 
-    socket.on('disconnect', () => {
-      console.log('Disconnected from WebSocket server');
+    socket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
     });
+
+    socket.on('disconnect', (reason) => {
+      console.log('Disconnected from WebSocket server:', reason);
+      if (reason === 'io server disconnect') {
+        // The disconnection was initiated by the server, reconnect manually
+        socket?.connect();
+      }
+    });
+
+    // Ensure socket is connected
+    if (!socket.connected) {
+      socket.connect();
+    }
   }
   return socket;
 };
@@ -67,6 +87,17 @@ export const startDownload = async (magnetLink: string): Promise<{ success: bool
     // Initialize socket if not already done
     const socket = initializeSocket();
     
+    // Wait for socket connection if not connected
+    if (!socket.connected) {
+      await new Promise((resolve) => {
+        if (socket.connected) {
+          resolve(true);
+        } else {
+          socket.once('connect', () => resolve(true));
+        }
+      });
+    }
+
     // Extract file name from magnet link
     const nameMatch = magnetLink.match(/dn=([^&]+)/);
     const fileName = nameMatch ? decodeURIComponent(nameMatch[1]) : "Unknown";
@@ -86,7 +117,7 @@ export const startDownload = async (magnetLink: string): Promise<{ success: bool
     if (error) throw error;
 
     // Start the actual download through the backend
-    const response = await fetch(`${API_BASE_URL}/api/download`, {
+    const response = await fetch(`${API_BASE_URL}/download`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
