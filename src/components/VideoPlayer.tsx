@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
 
 interface VideoPlayerProps {
   isOpen: boolean;
@@ -13,6 +14,10 @@ interface VideoPlayerProps {
 const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr>();
+  const [isMuted, setIsMuted] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   // Extract file ID from Google Drive URL
   const getFileId = (url: string) => {
@@ -22,6 +27,9 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
 
   useEffect(() => {
     if (videoRef.current && isOpen) {
+      setIsLoading(true);
+      setError(null);
+
       playerRef.current = new Plyr(videoRef.current, {
         controls: [
           'play-large',
@@ -47,7 +55,16 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
         },
         muted: false,
         volume: 1,
-        autoplay: true
+        autoplay: true,
+        seekTime: 10,
+        keyboard: { focused: true, global: true },
+        tooltips: { controls: true, seek: true },
+        displayDuration: true,
+        hideControls: false,
+        loadSprite: true,
+        iconUrl: 'plyr.svg',
+        blankVideo: 'https://cdn.plyr.io/static/blank.mp4',
+        ratio: '16:9'
       });
 
       // Ensure video is not muted when initialized
@@ -56,24 +73,43 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
         videoRef.current.volume = 1;
       }
 
-      // Start playing when opened
-      videoRef.current.play().catch(error => {
-        console.error('Error auto-playing video:', error);
-        // If autoplay fails, ensure it's not because of muted state
-        if (videoRef.current) {
-          videoRef.current.muted = false;
-          videoRef.current.volume = 1;
-          videoRef.current.play().catch(e => 
-            console.error('Error playing unmuted video:', e)
-          );
+      // Add error handling
+      videoRef.current.addEventListener('error', (e) => {
+        console.error('Video error:', e);
+        const error = videoRef.current?.error;
+        if (error) {
+          let errorMessage = 'Error playing video';
+          switch (error.code) {
+            case 1:
+              errorMessage = 'Video loading aborted';
+              break;
+            case 2:
+              errorMessage = 'Network error while loading video';
+              break;
+            case 3:
+              errorMessage = 'Error decoding video';
+              break;
+            case 4:
+              errorMessage = 'Video format not supported';
+              break;
+          }
+          setError(errorMessage);
+          toast({
+            title: "Playback Error",
+            description: errorMessage,
+            variant: "destructive",
+          });
         }
       });
 
-      // Add error handling for debugging
-      videoRef.current.addEventListener('error', (e) => {
-        console.error('Video error:', e);
-        console.error('Error code:', videoRef.current?.error?.code);
-        console.error('Error message:', videoRef.current?.error?.message);
+      // Handle loading state
+      videoRef.current.addEventListener('loadedmetadata', () => {
+        setIsLoading(false);
+      });
+
+      // Handle playback errors
+      videoRef.current.addEventListener('play', () => {
+        setIsLoading(false);
       });
 
       return () => {
@@ -83,7 +119,7 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
         }
       };
     }
-  }, [isOpen]);
+  }, [isOpen, toast]);
 
   const fileId = getFileId(videoUrl);
   const streamUrl = fileId ? `${import.meta.env.VITE_API_URL}/stream/${fileId}` : '';
@@ -92,6 +128,21 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[90vw] max-h-[90vh] p-0">
         <div className="relative w-full aspect-video bg-black">
+          {isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+            </div>
+          )}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+              <div className="text-center p-4">
+                <p className="text-red-500 font-medium">{error}</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Try downloading the file instead
+                </p>
+              </div>
+            </div>
+          )}
           {streamUrl && (
             <video
               ref={videoRef}
@@ -99,11 +150,10 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
               playsInline
               controls
               crossOrigin="anonymous"
-              muted={false}
+              muted={isMuted}
             >
-              <source src={streamUrl} type="video/x-matroska" />
-              <source src={streamUrl} type="video/webm" />
               <source src={streamUrl} type="video/mp4" />
+              <track kind="captions" label="English" srcLang="en" src="" default />
               Your browser does not support the video tag.
             </video>
           )}

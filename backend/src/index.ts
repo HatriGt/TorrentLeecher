@@ -10,6 +10,9 @@ import path from 'path'
 import fs from 'fs'
 import { createClient } from '@supabase/supabase-js'
 import fetch from 'node-fetch'
+import ffmpeg from 'fluent-ffmpeg'
+import ffmpegPath from '@ffmpeg-installer/ffmpeg'
+import ffprobePath from '@ffprobe-installer/ffprobe'
 
 // Type definitions
 declare module 'torrent-stream' {
@@ -102,6 +105,10 @@ auth.authorize((err) => {
 
 // Set up Google Drive API
 const drive = google.drive({ version: 'v3', auth })
+
+// Set FFmpeg paths
+ffmpeg.setFfmpegPath(ffmpegPath.path)
+ffmpeg.setFfprobePath(ffprobePath.path)
 
 // Schema for magnet link validation
 const magnetLinkSchema = z.object({
@@ -814,53 +821,90 @@ app.get('/api/stream/:fileId', async (req, res) => {
     
     // Determine the correct MIME type
     const mimeType = getMimeType(fileName);
+    const isMKV = fileName.toLowerCase().endsWith('.mkv');
 
     // Set CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Transfer-Encoding', 'binary');
 
-    if (range) {
-      // Handle range request (partial content)
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
-
-      res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunkSize,
-        'Content-Type': mimeType,
-      });
-
-      // Stream the file content
-      const stream = await drive.files.get({
-        fileId,
-        alt: 'media',
-        headers: {
-          Range: `bytes=${start}-${end}`
-        }
-      }, {
-        responseType: 'stream'
-      });
-
-      stream.data.pipe(res);
-    } else {
-      // Handle full content request
-      res.writeHead(200, {
-        'Content-Length': fileSize,
-        'Content-Type': mimeType,
-      });
-
-      const stream = await drive.files.get({
+    if (isMKV) {
+      // For MKV files, we'll transcode on the fly
+      res.setHeader('Content-Type', 'video/mp4'); // Transcode to MP4 for better browser support
+      
+      // Get the file stream from Google Drive
+      const fileStream = await drive.files.get({
         fileId,
         alt: 'media'
       }, {
         responseType: 'stream'
       });
 
-      stream.data.pipe(res);
+      // Create FFmpeg command for transcoding
+      const ffmpegCommand = ffmpeg(fileStream.data)
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .format('mp4')
+        .outputOptions([
+          '-movflags frag_keyframe+empty_moov',
+          '-movflags +faststart',
+          '-preset ultrafast',
+          '-tune zerolatency',
+          '-crf 23'
+        ])
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          if (!res.headersSent) {
+            res.status(500).send('Error transcoding video');
+          }
+        });
+
+      // Pipe the transcoded stream to the response
+      ffmpegCommand.pipe(res);
+    } else {
+      // For non-MKV files, use the existing streaming logic
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Content-Length': chunkSize,
+          'Content-Type': mimeType
+        });
+
+        const stream = await drive.files.get({
+          fileId,
+          alt: 'media',
+          headers: {
+            Range: `bytes=${start}-${end}`
+          }
+        }, {
+          responseType: 'stream'
+        });
+
+        stream.data.pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': fileSize,
+          'Content-Type': mimeType
+        });
+
+        const stream = await drive.files.get({
+          fileId,
+          alt: 'media'
+        }, {
+          responseType: 'stream'
+        });
+
+        stream.data.pipe(res);
+      }
     }
   } catch (error) {
     console.error('Error streaming video:', error);
