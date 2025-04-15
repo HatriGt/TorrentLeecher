@@ -13,6 +13,8 @@ import fetch from 'node-fetch'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegPath from '@ffmpeg-installer/ffmpeg'
 import ffprobePath from '@ffprobe-installer/ffprobe'
+import mediaRoutes from './routes/media'
+import downloadRoutes from './routes/download'
 
 // Type definitions
 declare module 'torrent-stream' {
@@ -911,6 +913,10 @@ app.get('/api/stream/:fileId', async (req, res) => {
     res.status(500).send('Error streaming video');
   }
 });
+
+// Register routes
+app.use('/api/media', mediaRoutes);
+app.use('/api/downloadfile', downloadRoutes);
 
 // Start server
 httpServer.listen(env.PORT, () => {

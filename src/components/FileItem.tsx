@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { File, Folder, ExternalLink, Download, Play, Music } from "lucide-react";
+import { File, Folder, ExternalLink, Download, Play, Music, Image } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { DriveItem } from "@/types/torrent";
 import VideoPlayer from "./VideoPlayer";
 import AudioPlayer from "./AudioPlayer";
+import ImageViewer from "./ImageViewer";
 
 interface FileItemProps {
   file: DriveItem;
@@ -16,17 +17,25 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
   const [isHovered, setIsHovered] = useState(false);
   const [isVideoOpen, setIsVideoOpen] = useState(false);
   const [isAudioOpen, setIsAudioOpen] = useState(false);
+  const [isImageOpen, setIsImageOpen] = useState(false);
   const { toast } = useToast();
 
   const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
   const isVideo = file.mimeType?.includes('video/') || file.name.match(/\.(mp4|mkv|avi|mov|wmv|flv|webm)$/i);
   const isAudio = file.mimeType?.includes('audio/') || file.name.match(/\.(mp3|wav|ogg|flac|aac|m4a)$/i);
+  const isImage = file.mimeType?.includes('image/') || file.name.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i);
   const formattedSize = file.size ? formatFileSize(parseInt(file.size)) : '-';
   const formattedDate = file.modifiedTime ? formatDate(file.modifiedTime) : 'Today';
+
+  const getMediaUrl = (fileId: string) => {
+    return `${import.meta.env.VITE_API_URL}/media/${fileId}`;
+  };
 
   const handleClick = () => {
     if (isFolder) {
       onFolderClick(file);
+    } else if (isImage) {
+      setIsImageOpen(true);
     }
   };
 
@@ -35,6 +44,8 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
       setIsVideoOpen(true);
     } else if (isAudio) {
       setIsAudioOpen(true);
+    } else if (isImage) {
+      setIsImageOpen(true);
     }
   };
 
@@ -53,14 +64,9 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
 
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (file.webViewLink) {
-      const link = document.createElement('a');
-      link.href = file.webViewLink;
-      link.setAttribute('download', file.name);
-      link.setAttribute('target', '_blank');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    if (file.id) {
+      const downloadUrl = `${import.meta.env.VITE_API_URL}/downloadfile/${file.id}`;
+      window.open(downloadUrl, '_blank');
     } else {
       toast({
         title: "Error",
@@ -76,6 +82,8 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
       setIsVideoOpen(true);
     } else if (isAudio) {
       setIsAudioOpen(true);
+    } else if (isImage) {
+      setIsImageOpen(true);
     }
   };
 
@@ -96,6 +104,8 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
               <Play className="h-5 w-5 text-green-500" />
             ) : isAudio ? (
               <Music className="h-5 w-5 text-purple-500" />
+            ) : isImage ? (
+              <Image className="h-5 w-5 text-pink-500" />
             ) : (
               <File className="h-5 w-5 text-gray-500" />
             )}
@@ -112,13 +122,13 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
         </div>
         <div className="col-span-1 flex justify-end">
           <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            {(isVideo || isAudio) && (
+            {(isVideo || isAudio || isImage) && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                 onClick={handlePlayMedia}
-                title={isVideo ? "Play video" : "Play audio"}
+                title={isVideo ? "Play video" : isAudio ? "Play audio" : "View image"}
               >
                 <Play className="h-4 w-4" />
               </Button>
@@ -153,7 +163,7 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
         <VideoPlayer
           isOpen={isVideoOpen}
           onClose={() => setIsVideoOpen(false)}
-          videoUrl={file.webViewLink || ''}
+          videoUrl={file.id ? getMediaUrl(file.id) : ''}
           title={file.name}
         />
       )}
@@ -162,7 +172,16 @@ const FileItem = ({ file, onFolderClick }: FileItemProps) => {
         <AudioPlayer
           isOpen={isAudioOpen}
           onClose={() => setIsAudioOpen(false)}
-          audioUrl={file.webViewLink || ''}
+          audioUrl={file.id ? getMediaUrl(file.id) : ''}
+          title={file.name}
+        />
+      )}
+
+      {isImage && (
+        <ImageViewer
+          isOpen={isImageOpen}
+          onClose={() => setIsImageOpen(false)}
+          imageUrl={file.id ? getMediaUrl(file.id) : ''}
           title={file.name}
         />
       )}
