@@ -21,8 +21,15 @@ const VideoPlayer = ({ isOpen, onClose, videoUrl, title }: VideoPlayerProps) => 
 
   // Extract file ID from Google Drive URL
   const getFileId = (url: string) => {
-    const match = url.match(/\/d\/([^/]+)/);
-    return match ? match[1] : '';
+    // Handle Google Drive URL format
+    const driveMatch = url.match(/\/d\/([^/]+)/);
+    if (driveMatch) return driveMatch[1];
+    
+    // Handle our API URL format
+    const apiMatch = url.match(/\/media\/([^/]+)/);
+    if (apiMatch) return apiMatch[1];
+    
+    return '';
   };
 
   useEffect(() => {
